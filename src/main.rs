@@ -1,10 +1,16 @@
 use emul8tor;
-use std::io;
+use std::{env, io};
 
 fn main() -> io::Result<()> {
-    let file_path = "3-corax+.ch8";
+    let mut args = env::args();
+    args.next();
 
-    match emul8tor::load_program(file_path) {
+    let file_path = match args.next() {
+        Some(arg) => arg,
+        None => return panic!("Didn't get a file path"),
+    };
+
+    match emul8tor::load_program(&file_path) {
         Ok(bytes) => {
             emul8tor::run(emul8tor::Chip8::new(bytes));
         }

@@ -7,6 +7,8 @@ use std::time::Duration;
 use std::usize;
 
 // TODO Create enum with PC moves
+// TODO Handle three quirks:
+// "Cosmac VIP" CHIP-8, HP48's SUPER-CHIP, XO-CHIP.
 
 use video::DisplayManager;
 
@@ -224,8 +226,9 @@ impl Chip8 {
     // 8xy5 - SUB Vx, Vy
     // Set Vx = Vx - Vy, set VF = NOT borrow.
     fn op_8xy5(&mut self, x: usize, y: usize) {
-        self.V[0xF] = if self.V[x] > self.V[y] { 1 } else { 0 };
+        let not_borrow = if self.V[x] >= self.V[y] { 1 } else { 0 };
         self.V[x] = self.V[x].wrapping_sub(self.V[y]);
+        self.V[0xF] = not_borrow;
     }
 
     // 8xy6 - SHR Vx {, Vy}
@@ -238,8 +241,9 @@ impl Chip8 {
     //8xy7 - SUBN Vx, Vy
     // Set Vx = Vy - Vx, set VF = NOT borrow.
     fn op_8xy7(&mut self, x: usize, y: usize) {
-        self.V[0xF] = if self.V[y] > self.V[x] { 1 } else { 0 };
+        let not_borrow = if self.V[y] >= self.V[x] { 1 } else { 0 };
         self.V[x] = self.V[y].wrapping_sub(self.V[x]);
+        self.V[0xF] = not_borrow;
     }
 
     // 8xyE - SHL Vx {, Vy}
