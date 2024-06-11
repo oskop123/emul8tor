@@ -16,20 +16,28 @@ pub struct DisplayManager {
 }
 
 impl DisplayManager {
+    /// Creates a new DisplayManager with an SDL2 context and a window.
+    /// Panics if SDL2 initialization or window creation fails.
     pub fn new() -> Self {
-        // TODO Handle errors + make const u32?
-        let sdl_context = sdl2::init().unwrap();
-        let video_subsystem = sdl_context.video().unwrap();
+        let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
+        let video_subsystem = sdl_context
+            .video()
+            .expect("Failed to get SDL2 video subsystem");
 
         let window = video_subsystem
             .window(WINDOW_TITLE, (X_DIM * SCALE) as u32, (Y_DIM * SCALE) as u32)
             .position_centered()
             .build()
-            .unwrap();
+            .expect("Failed to create window");
 
-        let mut canvas = window.into_canvas().build().unwrap();
+        let mut canvas = window
+            .into_canvas()
+            .build()
+            .expect("Failed to create canvas");
 
-        canvas.set_scale(SCALE as f32, SCALE as f32).unwrap();
+        canvas
+            .set_scale(SCALE as f32, SCALE as f32)
+            .expect("Failed to set scale");
 
         canvas.set_draw_color(Color::BLACK);
         canvas.clear();
@@ -42,12 +50,11 @@ impl DisplayManager {
         }
     }
 
-    /// Sets the pixel at position (x, y) to the given value.
-    /// If the value is 1, the pixel is turned on (white); if 0, the pixel is turned off (black).
+    /// Sets the pixel at position (x, y) to the given value (1 for white, 0 for black).
+    /// Returns true if the pixel was already set to the given value, false otherwise.
     pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) -> bool {
         self.update_needed = true;
 
-        println!("X Y {x} {y}");
         let x = x % X_DIM;
         let y = y % Y_DIM;
         let previous_value = self.VRAM[y][x];
@@ -65,7 +72,7 @@ impl DisplayManager {
         self.VRAM.iter_mut().for_each(|row| row.fill(0));
     }
 
-    /// Updates the display by rendering the VRAM content.
+    /// Updates the display by presenting the canvas if any changes were made.
     pub fn update(&mut self) {
         if self.update_needed {
             self.canvas.present();
@@ -83,6 +90,6 @@ impl DisplayManager {
         self.canvas.set_draw_color(color);
         self.canvas
             .draw_point(Point::new(x as i32, y as i32))
-            .unwrap();
+            .expect("Failed to draw point");
     }
 }
