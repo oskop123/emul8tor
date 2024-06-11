@@ -15,13 +15,13 @@ use audio::AudioManager;
 use input::InputManager;
 use video::DisplayManager;
 
-const ROM_SIZE: usize = 4096;
+const MEMORY_SIZE: usize = 4096;
 const V_COUNT: usize = 16;
-const PROGRAM_START_ADDRESS: usize = 0x200;
+const ROM_START_ADDRESS: usize = 0x200;
 const SPRITE_WIDTH: usize = 8;
 const MAX_STACK_LEVELS: usize = 16;
 
-pub const CHIP8_FONTSET: [u8; 80] = [
+const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
     0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -42,7 +42,7 @@ pub const CHIP8_FONTSET: [u8; 80] = [
 
 #[allow(non_snake_case)]
 pub struct Chip8 {
-    ROM: [u8; ROM_SIZE],
+    memory: [u8; MEMORY_SIZE],
     V: [u8; V_COUNT],
     I: u16,
     PC: usize,
@@ -53,7 +53,7 @@ pub struct Chip8 {
     delay_timer: u8,
     sound_timer: u8,
 
-    // Move all drivers into seperate drivers structure
+    // Move all drivers into seperate drivers structure. Inject as dependency??
     display: DisplayManager,
     input: InputManager,
     audio: AudioManager,
@@ -64,12 +64,12 @@ pub struct Chip8 {
 
 impl Chip8 {
     #[allow(non_snake_case)]
-    pub fn new(ROM: [u8; ROM_SIZE]) -> Self {
+    pub fn new(memory: [u8; MEMORY_SIZE]) -> Self {
         Chip8 {
-            ROM,
+            memory,
             V: [0; V_COUNT],
             I: 0,
-            PC: PROGRAM_START_ADDRESS,
+            PC: ROM_START_ADDRESS,
             stack: [0; MAX_STACK_LEVELS],
             SP: 0,
             delay_timer: 0,
@@ -106,12 +106,10 @@ impl Chip8 {
 
     fn wait_for_next_key(&mut self) {
         if self.wait_key {
-            let val = self.input.next_key_release();
-            if val == 64 {
-                return;
+            if let Some(val) = self.input.next_key_release() {
+                self.V[self.wait_key_register] = val;
+                self.wait_key = false;
             }
-            self.V[self.wait_key_register] = val;
-            self.wait_key = false;
         }
     }
 
@@ -122,7 +120,7 @@ impl Chip8 {
         //}
         //
 
-        let opcode = (self.ROM[self.PC] as u16) << 8 | self.ROM[self.PC + 1] as u16;
+        let opcode = (self.memory[self.PC] as u16) << 8 | self.memory[self.PC + 1] as u16;
         self.PC += 2;
 
         opcode
@@ -347,7 +345,7 @@ impl Chip8 {
     // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
         for row in 0..n as usize {
-            let register_value = self.ROM[self.I as usize + row];
+            let register_value = self.memory[self.I as usize + row];
 
             for offset in 0..SPRITE_WIDTH {
                 let x_coord = self.V[x] as usize + offset;
@@ -427,7 +425,7 @@ impl Chip8 {
     fn op_fx33(&mut self, x: usize) {
         let mut vx = self.V[x];
         for offset in (0..=2).rev() {
-            self.ROM[self.I as usize + offset] = vx % 10;
+            self.memory[self.I as usize + offset] = vx % 10;
             vx /= 10;
         }
     }
@@ -436,7 +434,7 @@ impl Chip8 {
     // Store registers V0 through Vx in memory starting at location I.
     fn op_fx55(&mut self, x: usize) {
         for offset in 0..=x {
-            self.ROM[self.I as usize + offset] = self.V[offset];
+            self.memory[self.I as usize + offset] = self.V[offset];
         }
     }
 
@@ -444,7 +442,7 @@ impl Chip8 {
     // Read registers V0 through Vx from memory starting at location I.
     fn op_fx65(&mut self, x: usize) {
         for offset in 0..=x {
-            self.V[offset] = self.ROM[self.I as usize + offset];
+            self.V[offset] = self.memory[self.I as usize + offset];
         }
     }
 }
@@ -473,10 +471,10 @@ pub fn run(mut chip8: Chip8) {
 }
 
 // Maybe make non public?
-pub fn load_program(file_path: &str) -> io::Result<[u8; ROM_SIZE]> {
+pub fn load_program_rom(file_path: &str) -> io::Result<[u8; MEMORY_SIZE]> {
     let mut file = File::open(file_path)?;
-    let mut buffer = [0u8; ROM_SIZE];
+    let mut buffer = [0u8; MEMORY_SIZE];
     buffer[..CHIP8_FONTSET.len()].copy_from_slice(&CHIP8_FONTSET);
-    file.read(&mut buffer[PROGRAM_START_ADDRESS..])?;
+    file.read(&mut buffer[ROM_START_ADDRESS..])?;
     Ok(buffer)
 }

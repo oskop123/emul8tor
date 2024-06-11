@@ -7,10 +7,10 @@ fn main() -> io::Result<()> {
 
     let file_path = match args.next() {
         Some(arg) => arg,
-        None => return panic!("Didn't get a file path"),
+        None => panic!("Didn't get a file path"),
     };
 
-    match emul8tor::load_program(&file_path) {
+    match emul8tor::load_program_rom(&file_path) {
         Ok(bytes) => {
             emul8tor::run(emul8tor::Chip8::new(bytes));
         }
