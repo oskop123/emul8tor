@@ -12,6 +12,7 @@ const WINDOW_TITLE: &str = "emul8tor";
 pub struct DisplayManager {
     canvas: Canvas<Window>,
     VRAM: [[u8; X_DIM]; Y_DIM],
+    update_needed: bool,
 }
 
 impl DisplayManager {
@@ -37,31 +38,39 @@ impl DisplayManager {
         DisplayManager {
             canvas,
             VRAM: [[0; X_DIM]; Y_DIM],
+            update_needed: false,
         }
     }
 
     /// Sets the pixel at position (x, y) to the given value.
     /// If the value is 1, the pixel is turned on (white); if 0, the pixel is turned off (black).
-    pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) {
-        // TODO wrap around
-        if x < X_DIM && y < Y_DIM {
-            self.VRAM[y][x] ^= value;
-            self.draw_pixel(x, y);
-        }
+    pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) -> bool {
+        self.update_needed = true;
+
+        println!("X Y {x} {y}");
+        let x = x % X_DIM;
+        let y = y % Y_DIM;
+        let previous_value = self.VRAM[y][x];
+        self.VRAM[y][x] ^= value;
+        self.draw_pixel(x, y);
+
+        previous_value == value
     }
 
     /// Clears the display and resets the VRAM.
     pub fn clear(&mut self) {
+        self.update_needed = true;
         self.canvas.set_draw_color(Color::BLACK);
         self.canvas.clear();
         self.VRAM.iter_mut().for_each(|row| row.fill(0));
-        // TODO Should update_display be called here?
-        //self.update_display();
     }
 
     /// Updates the display by rendering the VRAM content.
     pub fn update(&mut self) {
-        self.canvas.present();
+        if self.update_needed {
+            self.canvas.present();
+        }
+        self.update_needed = false;
     }
 
     /// Draws a single pixel at the given coordinates based on the VRAM content.

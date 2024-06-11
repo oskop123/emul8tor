@@ -1,15 +1,18 @@
+mod audio;
+mod input;
 mod video;
 
+use rand::Rng;
 use std::fs::File;
 use std::io::{self, Read};
-use std::thread::sleep;
-use std::time::Duration;
-use std::usize;
+use std::time::{Duration, Instant};
 
 // TODO Create enum with PC moves
 // TODO Handle three quirks:
 // "Cosmac VIP" CHIP-8, HP48's SUPER-CHIP, XO-CHIP.
 
+use audio::AudioManager;
+use input::InputManager;
 use video::DisplayManager;
 
 const ROM_SIZE: usize = 4096;
@@ -47,8 +50,16 @@ pub struct Chip8 {
     stack: [usize; MAX_STACK_LEVELS],
     SP: usize,
 
+    delay_timer: u8,
+    sound_timer: u8,
+
     // Move all drivers into seperate drivers structure
     display: DisplayManager,
+    input: InputManager,
+    audio: AudioManager,
+
+    wait_key: bool,
+    wait_key_register: usize,
 }
 
 impl Chip8 {
@@ -61,7 +72,46 @@ impl Chip8 {
             PC: PROGRAM_START_ADDRESS,
             stack: [0; MAX_STACK_LEVELS],
             SP: 0,
+            delay_timer: 0,
+            sound_timer: 0,
             display: DisplayManager::new(),
+            input: InputManager::new(),
+            audio: AudioManager::new(),
+            wait_key: false,
+            wait_key_register: 0,
+        }
+    }
+
+    fn emulate_cycle(&mut self) {
+        if self.wait_key {
+            self.wait_for_next_key();
+            return;
+        }
+        let opcode = self.next_opcode();
+        self.execute_opcode(opcode);
+    }
+
+    fn update_timers(&mut self) {
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+
+        if self.sound_timer > 0 {
+            if self.sound_timer == 1 {
+                self.audio.stop();
+            }
+            self.sound_timer -= 1;
+        }
+    }
+
+    fn wait_for_next_key(&mut self) {
+        if self.wait_key {
+            let val = self.input.next_key_release();
+            if val == 64 {
+                return;
+            }
+            self.V[self.wait_key_register] = val;
+            self.wait_key = false;
         }
     }
 
@@ -115,9 +165,21 @@ impl Chip8 {
             },
             0x9000 => self.op_9xy0(x, y),
             0xA000 => self.op_annn(nnn),
+            0xB000 => self.op_bnnn(nnn),
+            0xC000 => self.op_cxkk(x, kk),
             0xD000 => self.op_dxyn(x, y, n),
+            0xE000 => match opcode & 0x00FF {
+                0x009E => self.op_ex9e(x),
+                0x00A1 => self.op_exa1(x),
+                _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+            },
             0xF000 => match opcode & 0x00FF {
+                0x0007 => self.op_fx07(x),
+                0x000A => self.op_fx0a(x),
+                0x0015 => self.op_fx15(x),
+                0x0018 => self.op_fx18(x),
                 0x001E => self.op_fx1e(x),
+                0x0029 => self.op_fx29(x),
                 0x0033 => self.op_fx33(x),
                 0x0055 => self.op_fx55(x),
                 0x0065 => self.op_fx65(x),
@@ -126,6 +188,8 @@ impl Chip8 {
             _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
         }
     }
+
+    // TODO 0NNN - skip
 
     // 00E0 - CLS
     // Clear the display.
@@ -261,10 +325,101 @@ impl Chip8 {
         }
     }
 
+    // Annn - LD I, addr
+    // Set I = nnn.
+    fn op_annn(&mut self, nnn: u16) {
+        self.I = nnn;
+    }
+
+    // Bnnn - JP V0, addr
+    // Jump to location nnn + V0.
+    fn op_bnnn(&mut self, nnn: u16) {
+        self.PC = nnn as usize + self.V[0x0] as usize;
+    }
+
+    // Cxkk - RND Vx, byte
+    // Set Vx = random byte AND kk.
+    fn op_cxkk(&mut self, x: usize, kk: u8) {
+        self.V[x] = rand::thread_rng().gen_range(1..=255) & kk;
+    }
+
+    // Dxyn - DRW Vx, Vy, nibble
+    // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
+    fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
+        for row in 0..n as usize {
+            let register_value = self.ROM[self.I as usize + row];
+
+            for offset in 0..SPRITE_WIDTH {
+                let x_coord = self.V[x] as usize + offset;
+                let y_coord = self.V[y] as usize + row;
+
+                let collision =
+                    self.display
+                        .set_pixel(x_coord, y_coord, (register_value >> (7 - offset)) & 1);
+
+                if collision {
+                    self.V[0xF] = 0x1;
+                }
+            }
+        }
+
+        // TODO Remove after refresh timer implementation. Screen tearing visible without delay.
+        // sleep(Duration::from_millis(200));
+    }
+
+    // Ex9E - SKP Vx
+    // Skip next instruction if key with the value of Vx is pressed.
+    fn op_ex9e(&mut self, x: usize) {
+        if self.input.is_key_pressed(self.V[x]) {
+            self.PC += 2;
+        }
+    }
+
+    // ExA1 - SKNP Vx
+    // Skip next instruction if key with the value of Vx is not pressed.
+    fn op_exa1(&mut self, x: usize) {
+        if !self.input.is_key_pressed(self.V[x]) {
+            self.PC += 2;
+        }
+    }
+
+    // Fx07 - LD Vx, DT
+    // Set Vx = delay timer value.
+    fn op_fx07(&mut self, x: usize) {
+        self.V[x] = self.delay_timer;
+    }
+
+    // Fx0A - LD Vx, K
+    // Wait for a key press, store the value of the key in Vx.
+    fn op_fx0a(&mut self, x: usize) {
+        self.wait_key = true;
+        self.wait_key_register = x;
+        self.input.reset_key_state();
+    }
+
+    // Fx15 - LD DT, Vx
+    // Set delay timer = Vx.
+    fn op_fx15(&mut self, x: usize) {
+        self.delay_timer = self.V[x];
+    }
+
+    // Fx18 - LD ST, Vx
+    // Set sound timer = Vx.
+    fn op_fx18(&mut self, x: usize) {
+        self.sound_timer = self.V[x];
+        self.audio.start();
+    }
+
     // Fx1E - ADD I, Vx
     // Set I = I + Vx.
     fn op_fx1e(&mut self, x: usize) {
         self.I += self.V[x] as u16;
+    }
+
+    // Fx29 - LD F, Vx
+    // Set I = location of sprite for digit Vx.
+    fn op_fx29(&mut self, x: usize) {
+        self.I = (self.V[x] * 5) as u16;
     }
 
     // Fx33 - LD B, Vx
@@ -292,41 +447,28 @@ impl Chip8 {
             self.V[offset] = self.ROM[self.I as usize + offset];
         }
     }
-
-    // Annn - LD I, addr
-    // Set I = nnn.
-    fn op_annn(&mut self, nnn: u16) {
-        self.I = nnn;
-    }
-
-    // Dxyn - DRW Vx, Vy, nibble
-    // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
-    fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
-        // TODO set VF
-        for row in 0..n as usize {
-            let register_value = self.ROM[self.I as usize + row];
-
-            for offset in 0..SPRITE_WIDTH {
-                let x_coord = self.V[x] as usize + offset;
-                let y_coord = self.V[y] as usize + row;
-
-                self.display
-                    .set_pixel(x_coord, y_coord, (register_value >> (7 - offset)) & 1);
-            }
-        }
-
-        self.display.update();
-
-        // TODO Remove after refresh timer implementation. Screen tearing visible without delay.
-        sleep(Duration::from_millis(200));
-    }
 }
 
+const FRAME_RATE: u32 = 60;
+
 pub fn run(mut chip8: Chip8) {
-    // TODO loop while result of next-opcode is ok
+    let mut last_frame = Instant::now();
+    let frame_duration: Duration = Duration::from_secs_f64(1.0 / FRAME_RATE as f64);
+
     loop {
-        let opcode = chip8.next_opcode();
-        chip8.execute_opcode(opcode);
+        let now = Instant::now();
+
+        chip8.emulate_cycle();
+
+        if now.duration_since(last_frame) >= frame_duration {
+            last_frame = now;
+
+            chip8.display.update();
+
+            chip8.update_timers();
+        }
+
+        // TODO Handle key inputs
     }
 }
 
