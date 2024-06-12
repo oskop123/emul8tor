@@ -64,6 +64,8 @@ pub struct Chip8 {
 impl Chip8 {
     #[allow(non_snake_case)]
     pub fn new(memory: [u8; MEMORY_SIZE]) -> Self {
+        let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
+
         Chip8 {
             memory,
             V: [0; V_COUNT],
@@ -75,7 +77,7 @@ impl Chip8 {
             sound_timer: 0,
             display: DisplayManager::new(),
             input: InputManager::new(),
-            audio: AudioManager::new(),
+            audio: AudioManager::new(&sdl_context).unwrap(),
             wait_key: false,
             wait_key_register: 0,
         }
