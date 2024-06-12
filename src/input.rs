@@ -91,7 +91,7 @@ impl InputManager {
     ///
     /// # Returns
     /// * `Option<u8>` - The hex key code of the next key release, or None if no key was released.
-    pub fn next_key_release(&mut self) -> Option<u8> {
+    pub fn get_next_key_release(&mut self) -> Option<u8> {
         self.event_pump.pump_events();
 
         for event in self.event_pump.poll_iter() {

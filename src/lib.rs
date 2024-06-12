@@ -53,7 +53,6 @@ pub struct Chip8 {
     delay_timer: u8,
     sound_timer: u8,
 
-    // Move all drivers into seperate drivers structure. Inject as dependency??
     display: DisplayManager,
     input: InputManager,
     audio: AudioManager,
@@ -87,7 +86,7 @@ impl Chip8 {
             self.wait_for_next_key();
             return;
         }
-        let opcode = self.next_opcode();
+        let opcode = self.fetch_opcode();
         self.execute_opcode(opcode);
     }
 
@@ -97,38 +96,29 @@ impl Chip8 {
         }
 
         if self.sound_timer > 0 {
-            if self.sound_timer == 1 {
-                self.audio.stop();
-            }
+            self.audio.start();
             self.sound_timer -= 1;
+        } else {
+            self.audio.stop()
         }
     }
 
     fn wait_for_next_key(&mut self) {
         if self.wait_key {
-            if let Some(val) = self.input.next_key_release() {
+            if let Some(val) = self.input.get_next_key_release() {
                 self.V[self.wait_key_register] = val;
                 self.wait_key = false;
             }
         }
     }
 
-    fn next_opcode(&mut self) -> u16 {
-        // TODO Ensure we don't read out of bounds???
-        // if self.pc + 1 >= MEMORY_SIZE {
-        //   return Err("Program counter out of bounds");
-        //}
-        //
-
+    fn fetch_opcode(&mut self) -> u16 {
         let opcode = (self.memory[self.PC] as u16) << 8 | self.memory[self.PC + 1] as u16;
         self.PC += 2;
-
         opcode
     }
 
     fn execute_opcode(&mut self, opcode: u16) {
-        // TODO Maybe here some symbols should be cast to usize? Define utility functions and move
-        // them to opcode execution methods
         let kk = (opcode & 0x00FF) as u8;
         let nnn = opcode & 0x0FFF;
 
@@ -140,7 +130,7 @@ impl Chip8 {
             0x0000 => match opcode {
                 0x00E0 => self.op_00e0(),
                 0x00EE => self.op_00ee(),
-                _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+                _ => Self::unknown_opcode(opcode),
             },
             0x1000 => self.op_1nnn(nnn),
             0x2000 => self.op_2nnn(nnn),
@@ -159,7 +149,7 @@ impl Chip8 {
                 0x8006 => self.op_8xy6(x, y),
                 0x8007 => self.op_8xy7(x, y),
                 0x800E => self.op_8xye(x, y),
-                _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+                _ => Self::unknown_opcode(opcode),
             },
             0x9000 => self.op_9xy0(x, y),
             0xA000 => self.op_annn(nnn),
@@ -169,7 +159,7 @@ impl Chip8 {
             0xE000 => match opcode & 0x00FF {
                 0x009E => self.op_ex9e(x),
                 0x00A1 => self.op_exa1(x),
-                _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+                _ => Self::unknown_opcode(opcode),
             },
             0xF000 => match opcode & 0x00FF {
                 0x0007 => self.op_fx07(x),
@@ -181,265 +171,229 @@ impl Chip8 {
                 0x0033 => self.op_fx33(x),
                 0x0055 => self.op_fx55(x),
                 0x0065 => self.op_fx65(x),
-                _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+                _ => Self::unknown_opcode(opcode),
             },
-            _ => panic!("{}", format!("{:x}", opcode)), //TODO error?
+            _ => Self::unknown_opcode(opcode),
         }
     }
 
-    // TODO 0NNN - skip
+    fn unknown_opcode(opcode: u16) {
+        panic!("Unknown opcode: {:X}", opcode);
+    }
 
-    // 00E0 - CLS
-    // Clear the display.
+    // 00E0 - CLS: Clear the display.
     fn op_00e0(&mut self) {
         self.display.clear();
     }
 
-    // 00EE - RET
-    // Return from a subroutine.
+    // 00EE - RET: Return from a subroutine.
     fn op_00ee(&mut self) {
+        if self.SP == 0 {
+            panic!("Stack underflow!");
+        }
         self.SP -= 1;
         self.PC = self.stack[self.SP];
     }
 
-    // 1nnn - JP addr
-    // Jump to location nnn.
-    fn op_1nnn(&mut self, nnn: u16) {
-        self.PC = nnn as usize;
+    // 1nnn - JP addr: Jump to location nnn.
+    fn op_1nnn(&mut self, addr: u16) {
+        self.PC = addr as usize;
     }
 
-    // 2nnn - CALL addr
-    // Call subroutine at nnn.
-    fn op_2nnn(&mut self, nnn: u16) {
-        // TODO Define stack overflow error
+    // 2nnn - CALL addr: Call subroutine at nnn.
+    fn op_2nnn(&mut self, addr: u16) {
+        if self.SP >= MAX_STACK_LEVELS {
+            panic!("Stack overflow!");
+        }
         self.stack[self.SP] = self.PC;
         self.SP += 1;
-        self.PC = nnn as usize;
+        self.PC = addr as usize;
     }
 
-    // 3xkk - SE Vx, byte
-    // Skip next instruction if Vx = kk.
+    // 3xkk - SE Vx, byte: Skip next instruction if Vx = kk.
     fn op_3xkk(&mut self, x: usize, kk: u8) {
         if self.V[x] == kk {
             self.PC += 2;
         }
     }
 
-    // 4xkk - SE Vx, byte
-    // Skip next instruction if Vx != kk.
+    // 4xkk - SNE Vx, byte: Skip next instruction if Vx != kk.
     fn op_4xkk(&mut self, x: usize, kk: u8) {
         if self.V[x] != kk {
             self.PC += 2;
         }
     }
 
-    // 5xy0 - SE Vx, Vy
-    // Skip next instruction if Vx = Vy.
+    // 5xy0 - SE Vx, Vy: Skip next instruction if Vx = Vy.
     fn op_5xy0(&mut self, x: usize, y: usize) {
         if self.V[x] == self.V[y] {
             self.PC += 2;
         }
     }
 
-    // 6xkk - LD Vx, byte
-    // Set Vx = kk.
+    // 6xkk - LD Vx, byte: Set Vx = kk.
     fn op_6xkk(&mut self, x: usize, kk: u8) {
         self.V[x] = kk;
     }
 
-    // 7xkk - ADD Vx, byte
-    // Set Vx = Vx + kk.
+    // 7xkk - ADD Vx, byte: Set Vx = Vx + kk.
     fn op_7xkk(&mut self, x: usize, kk: u8) {
         self.V[x] = self.V[x].wrapping_add(kk);
     }
 
-    // 8xy0 - LD Vx, Vy
-    // Set Vx = Vy.
+    // 8xy0 - LD Vx, Vy: Set Vx = Vy.
     fn op_8xy0(&mut self, x: usize, y: usize) {
         self.V[x] = self.V[y];
     }
 
-    // 8xy1 - OR Vx, Vy
-    // Set Vx = Vx OR Vy.
+    // 8xy1 - OR Vx, Vy: Set Vx = Vx OR Vy.
     fn op_8xy1(&mut self, x: usize, y: usize) {
         self.V[x] |= self.V[y];
     }
 
-    // 8xy2 - AND Vx, Vy
-    // Set Vx = Vx AND Vy.
+    // 8xy2 - AND Vx, Vy: Set Vx = Vx AND Vy.
     fn op_8xy2(&mut self, x: usize, y: usize) {
         self.V[x] &= self.V[y];
     }
 
-    // 8xy3 - XOR Vx, Vy
-    // Set Vx = Vx XOR Vy.
+    // 8xy3 - XOR Vx, Vy: Set Vx = Vx XOR Vy.
     fn op_8xy3(&mut self, x: usize, y: usize) {
         self.V[x] ^= self.V[y];
     }
 
-    // 8xy4 - ADD Vx, Vy
-    // Set Vx = Vx + Vy, set VF = carry.
+    // 8xy4 - ADD Vx, Vy: Set Vx = Vx + Vy, set VF = carry.
     fn op_8xy4(&mut self, x: usize, y: usize) {
-        let (sum, overflowed) = self.V[x].overflowing_add(self.V[y]);
-        self.V[x] = sum;
-        self.V[0xF] = if overflowed { 1 } else { 0 }
+        let (result, carry) = self.V[x].overflowing_add(self.V[y]);
+        self.V[x] = result;
+        self.V[0xF] = if carry { 1 } else { 0 }
     }
 
-    // 8xy5 - SUB Vx, Vy
-    // Set Vx = Vx - Vy, set VF = NOT borrow.
+    // 8xy5 - SUB Vx, Vy: Set Vx = Vx - Vy, set VF = NOT borrow.
     fn op_8xy5(&mut self, x: usize, y: usize) {
-        let not_borrow = if self.V[x] >= self.V[y] { 1 } else { 0 };
-        self.V[x] = self.V[x].wrapping_sub(self.V[y]);
-        self.V[0xF] = not_borrow;
+        let (result, borrow) = self.V[x].overflowing_sub(self.V[y]);
+        self.V[x] = result;
+        self.V[0xF] = !borrow as u8;
     }
 
-    // 8xy6 - SHR Vx {, Vy}
-    // Set Vx = Vx SHR 1.
+    // 8xy6 - SHR Vx {, Vy}: Set Vx = Vx SHR 1.
     fn op_8xy6(&mut self, x: usize, _y: usize) {
         self.V[0xF] = self.V[x] & 0x1;
         self.V[x] >>= 1;
     }
 
-    //8xy7 - SUBN Vx, Vy
-    // Set Vx = Vy - Vx, set VF = NOT borrow.
+    // 8xy7 - SUBN Vx, Vy: Set Vx = Vy - Vx, set VF = NOT borrow.
     fn op_8xy7(&mut self, x: usize, y: usize) {
-        let not_borrow = if self.V[y] >= self.V[x] { 1 } else { 0 };
-        self.V[x] = self.V[y].wrapping_sub(self.V[x]);
-        self.V[0xF] = not_borrow;
+        let (result, borrow) = self.V[y].overflowing_sub(self.V[x]);
+        self.V[x] = result;
+        self.V[0xF] = !borrow as u8;
     }
 
-    // 8xyE - SHL Vx {, Vy}
-    // Set Vx = Vx SHL 1.
+    // 8xye - SHL Vx {, Vy}: Set Vx = Vx SHL 1.
     fn op_8xye(&mut self, x: usize, _y: usize) {
-        self.V[0xF] = self.V[x] & 0x80;
+        self.V[0xF] = (self.V[x] >> 7) & 0x1;
         self.V[x] <<= 1;
     }
 
-    // 9xy0 - SNE Vx, Vy
-    // Skip next instruction if Vx != Vy.
+    // 9xy0 - SNE Vx, Vy: Skip next instruction if Vx != Vy.
     fn op_9xy0(&mut self, x: usize, y: usize) {
         if self.V[x] != self.V[y] {
             self.PC += 2;
         }
     }
 
-    // Annn - LD I, addr
-    // Set I = nnn.
-    fn op_annn(&mut self, nnn: u16) {
-        self.I = nnn;
+    // Annn - LD I, addr: Set I = nnn.
+    fn op_annn(&mut self, addr: u16) {
+        self.I = addr;
     }
 
-    // Bnnn - JP V0, addr
-    // Jump to location nnn + V0.
-    fn op_bnnn(&mut self, nnn: u16) {
-        self.PC = nnn as usize + self.V[0x0] as usize;
+    // Bnnn - JP V0, addr: Jump to location nnn + V0.
+    fn op_bnnn(&mut self, addr: u16) {
+        self.PC = (addr + self.V[0] as u16) as usize;
     }
 
-    // Cxkk - RND Vx, byte
-    // Set Vx = random byte AND kk.
+    // Cxkk - RND Vx, byte: Set Vx = random byte AND kk.
     fn op_cxkk(&mut self, x: usize, kk: u8) {
-        self.V[x] = rand::thread_rng().gen_range(1..=255) & kk;
+        self.V[x] = rand::thread_rng().gen::<u8>() & kk;
     }
 
-    // Dxyn - DRW Vx, Vy, nibble
-    // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
+    // Dxyn - DRW Vx, Vy, nibble: Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
-        for row in 0..n as usize {
-            let register_value = self.memory[self.I as usize + row];
+        let x_coord = self.V[x] as usize;
+        let y_coord = self.V[y] as usize;
 
-            for offset in 0..SPRITE_WIDTH {
-                let x_coord = self.V[x] as usize + offset;
-                let y_coord = self.V[y] as usize + row;
-
-                let collision =
-                    self.display
-                        .set_pixel(x_coord, y_coord, (register_value >> (7 - offset)) & 1);
-
-                if collision {
-                    self.V[0xF] = 0x1;
-                }
+        self.V[0xF] = 0;
+        for byte_index in 0..n as usize {
+            let y = (y_coord + byte_index) % self.display.get_height();
+            let byte = self.memory[self.I as usize + byte_index];
+            for bit_index in 0..SPRITE_WIDTH {
+                let x = (x_coord + bit_index) % self.display.get_width();
+                let bit = (byte >> (7 - bit_index)) & 1;
+                self.V[0xF] |= self.display.set_pixel(x, y, bit);
             }
         }
-
-        // TODO Remove after refresh timer implementation. Screen tearing visible without delay.
-        // sleep(Duration::from_millis(200));
     }
 
-    // Ex9E - SKP Vx
-    // Skip next instruction if key with the value of Vx is pressed.
+    // Ex9E - SKP Vx: Skip next instruction if key with the value of Vx is pressed.
     fn op_ex9e(&mut self, x: usize) {
         if self.input.is_key_pressed(self.V[x]) {
             self.PC += 2;
         }
     }
 
-    // ExA1 - SKNP Vx
-    // Skip next instruction if key with the value of Vx is not pressed.
+    // ExA1 - SKNP Vx: Skip next instruction if key with the value of Vx is not pressed.
     fn op_exa1(&mut self, x: usize) {
         if !self.input.is_key_pressed(self.V[x]) {
             self.PC += 2;
         }
     }
 
-    // Fx07 - LD Vx, DT
-    // Set Vx = delay timer value.
+    // Fx07 - LD Vx, DT: Set Vx = delay timer value.
     fn op_fx07(&mut self, x: usize) {
         self.V[x] = self.delay_timer;
     }
 
-    // Fx0A - LD Vx, K
-    // Wait for a key press, store the value of the key in Vx.
+    // Fx0A - LD Vx, K: Wait for a key press, store the value of the key in Vx.
     fn op_fx0a(&mut self, x: usize) {
         self.wait_key = true;
         self.wait_key_register = x;
         self.input.reset_key_state();
     }
 
-    // Fx15 - LD DT, Vx
-    // Set delay timer = Vx.
+    // Fx15 - LD DT, Vx: Set delay timer = Vx.
     fn op_fx15(&mut self, x: usize) {
         self.delay_timer = self.V[x];
     }
 
-    // Fx18 - LD ST, Vx
-    // Set sound timer = Vx.
+    // Fx18 - LD ST, Vx: Set sound timer = Vx.
     fn op_fx18(&mut self, x: usize) {
         self.sound_timer = self.V[x];
-        self.audio.start();
     }
 
-    // Fx1E - ADD I, Vx
-    // Set I = I + Vx.
+    // Fx1E - ADD I, Vx: Set I = I + Vx.
     fn op_fx1e(&mut self, x: usize) {
         self.I += self.V[x] as u16;
     }
 
-    // Fx29 - LD F, Vx
-    // Set I = location of sprite for digit Vx.
+    // Fx29 - LD F, Vx: Set I = location of sprite for digit Vx.
     fn op_fx29(&mut self, x: usize) {
-        self.I = (self.V[x] * 5) as u16;
+        self.I = self.V[x] as u16 * 5;
     }
 
-    // Fx33 - LD B, Vx
-    // Store BCD representation of Vx in memory locations I, I+1, and I+2.
+    // Fx33 - LD B, Vx: Store BCD representation of Vx in memory locations I, I+1, and I+2.
     fn op_fx33(&mut self, x: usize) {
-        let mut vx = self.V[x];
-        for offset in (0..=2).rev() {
-            self.memory[self.I as usize + offset] = vx % 10;
-            vx /= 10;
-        }
+        self.memory[self.I as usize] = self.V[x] / 100;
+        self.memory[self.I as usize + 1] = (self.V[x] % 100) / 10;
+        self.memory[self.I as usize + 2] = self.V[x] % 10;
     }
 
-    // Fx55 - LD [I], Vx
-    // Store registers V0 through Vx in memory starting at location I.
+    // Fx55 - LD [I], Vx: Store registers V0 through Vx in memory starting at location I.
     fn op_fx55(&mut self, x: usize) {
         for offset in 0..=x {
             self.memory[self.I as usize + offset] = self.V[offset];
         }
     }
 
-    // Fx65 - LD Vx, [I]
-    // Read registers V0 through Vx from memory starting at location I.
+    // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I.
     fn op_fx65(&mut self, x: usize) {
         for offset in 0..=x {
             self.V[offset] = self.memory[self.I as usize + offset];
@@ -448,29 +402,35 @@ impl Chip8 {
 }
 
 const FRAME_RATE: u32 = 60;
+const CYCLES_PER_SECOND: u32 = 700;
 
 pub fn run(mut chip8: Chip8) {
     let mut last_frame = Instant::now();
     let frame_duration: Duration = Duration::from_secs_f64(1.0 / FRAME_RATE as f64);
 
+    let mut last_cycle = Instant::now();
+    let cycle_duration: Duration = Duration::from_secs_f64(1.0 / CYCLES_PER_SECOND as f64);
+
     loop {
-        let now = Instant::now();
+        if last_cycle.elapsed() >= cycle_duration {
+            last_cycle = Instant::now();
 
-        chip8.emulate_cycle();
+            chip8.emulate_cycle();
+        }
 
-        if now.duration_since(last_frame) >= frame_duration {
-            last_frame = now;
+        if last_frame.elapsed() >= frame_duration {
+            last_frame = Instant::now();
 
-            chip8.display.update();
-
+            chip8.display.render();
             chip8.update_timers();
         }
 
         // TODO Handle key inputs
+        // TODO Rework inpu mechanism
+        // TODO Handle quit with escape
     }
 }
 
-// Maybe make non public?
 pub fn load_program_rom(file_path: &str) -> io::Result<[u8; MEMORY_SIZE]> {
     let mut file = File::open(file_path)?;
     let mut buffer = [0u8; MEMORY_SIZE];

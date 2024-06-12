@@ -50,18 +50,26 @@ impl DisplayManager {
         }
     }
 
+    /// Return the height of the display
+    pub fn get_height(&self) -> usize {
+        Y_DIM
+    }
+
+    /// Return the width of the display
+    pub fn get_width(&self) -> usize {
+        X_DIM
+    }
+
     /// Sets the pixel at position (x, y) to the given value (1 for white, 0 for black).
-    /// Returns true if the pixel was already set to the given value, false otherwise.
-    pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) -> bool {
+    /// Returns 1 if the pixel was already set to the given value, 0 otherwise.
+    pub fn set_pixel(&mut self, x: usize, y: usize, value: u8) -> u8 {
         self.update_needed = true;
 
-        let x = x % X_DIM;
-        let y = y % Y_DIM;
         let previous_value = self.VRAM[y][x];
         self.VRAM[y][x] ^= value;
         self.draw_pixel(x, y);
 
-        previous_value == value
+        previous_value
     }
 
     /// Clears the display and resets the VRAM.
@@ -72,8 +80,8 @@ impl DisplayManager {
         self.VRAM.iter_mut().for_each(|row| row.fill(0));
     }
 
-    /// Updates the display by presenting the canvas if any changes were made.
-    pub fn update(&mut self) {
+    /// Renders the display by presenting the canvas if any changes were made.
+    pub fn render(&mut self) {
         if self.update_needed {
             self.canvas.present();
         }
