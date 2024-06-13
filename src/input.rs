@@ -2,108 +2,95 @@ use sdl2::event::Event;
 use sdl2::keyboard::Scancode;
 use sdl2::EventPump;
 use std::collections::HashMap;
+use std::error::Error;
 
 const KEYS_NUM: usize = 16;
 
+const SCANCODE_TO_HEX_MAP: [(Scancode, u8); KEYS_NUM] = [
+    (Scancode::Num1, 0x1),
+    (Scancode::Num2, 0x2),
+    (Scancode::Num3, 0x3),
+    (Scancode::Num4, 0xC),
+    (Scancode::Q, 0x4),
+    (Scancode::W, 0x5),
+    (Scancode::E, 0x6),
+    (Scancode::R, 0xD),
+    (Scancode::A, 0x7),
+    (Scancode::S, 0x8),
+    (Scancode::D, 0x9),
+    (Scancode::F, 0xE),
+    (Scancode::Z, 0xA),
+    (Scancode::X, 0x0),
+    (Scancode::C, 0xB),
+    (Scancode::V, 0xF),
+];
+
+/// Manages input using SDL2.
 pub struct InputManager {
     event_pump: EventPump,
+
     key_state: [bool; KEYS_NUM],
+    released_key: Option<u8>,
+    waiting_for_key: bool,
+    quit: bool,
+
     scancode_to_hex_map: HashMap<Scancode, u8>,
-    hex_to_scancode_map: HashMap<u8, Scancode>,
 }
 
-// TODO Major refactor related to class API and main loop.
-
-// TODO Handle exit. QUIT/Esc
 impl InputManager {
-    /// Creates a new InputManager instance, initializing SDL2 and setting up the event pump.
-    /// Panics if SDL2 initialization or event pump creation fails.
-    pub fn new() -> Self {
-        let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
-        let event_pump = sdl_context
-            .event_pump()
-            .expect("Failed to get SDL2 event pump");
-
-        let (scancode_to_hex_map, hex_to_scancode_map) = Self::create_key_mappings();
-
-        InputManager {
-            event_pump,
-            key_state: [false; KEYS_NUM],
-            scancode_to_hex_map,
-            hex_to_scancode_map,
-        }
-    }
-
-    /// Creates the mappings between scancodes and hex keys.
-    ///
-    /// # Returns
-    /// * `(HashMap<Scancode, u8>, HashMap<u8, Scancode>)` - The scancode to hex and hex to scancode mappings.
-    fn create_key_mappings() -> (HashMap<Scancode, u8>, HashMap<u8, Scancode>) {
-        let mut scancode_to_hex_map = HashMap::new();
-        let mut hex_to_scancode_map = HashMap::new();
-
-        let mappings = [
-            (Scancode::Num1, 0x1),
-            (Scancode::Num2, 0x2),
-            (Scancode::Num3, 0x3),
-            (Scancode::Num4, 0xC),
-            (Scancode::Q, 0x4),
-            (Scancode::W, 0x5),
-            (Scancode::E, 0x6),
-            (Scancode::R, 0xD),
-            (Scancode::A, 0x7),
-            (Scancode::S, 0x8),
-            (Scancode::D, 0x9),
-            (Scancode::F, 0xE),
-            (Scancode::Z, 0xA),
-            (Scancode::X, 0x0),
-            (Scancode::C, 0xB),
-            (Scancode::V, 0xF),
-        ];
-
-        for &(scancode, hex_key) in &mappings {
-            scancode_to_hex_map.insert(scancode, hex_key);
-            hex_to_scancode_map.insert(hex_key, scancode);
-        }
-
-        (scancode_to_hex_map, hex_to_scancode_map)
-    }
-
-    /// Checks if the specified hex key is pressed.
+    /// Creates a new `InputManager` instance.
     ///
     /// # Arguments
-    /// * `hex_key` - A u8 representing the hex key to check.
     ///
-    /// # Returns
-    /// * `bool` - true if the key is pressed, false otherwise.
-    pub fn is_key_pressed(&mut self, hex_key: u8) -> bool {
-        self.event_pump.pump_events();
-        if let Some(&scancode) = self.hex_to_scancode_map.get(&hex_key) {
-            self.event_pump
-                .keyboard_state()
-                .is_scancode_pressed(scancode)
-        } else {
-            false
-        }
+    /// * `sdl_context` - A reference to an initialized SDL context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if SDL2 fails to get the event pump.
+    pub fn new(sdl_context: &sdl2::Sdl) -> Result<Self, Box<dyn Error>> {
+        let event_pump = sdl_context
+            .event_pump()
+            .map_err(|e| format!("Failed to get SDL2 event pump: {}", e))?;
+
+        let scancode_to_hex_map = SCANCODE_TO_HEX_MAP.iter().cloned().collect();
+
+        Ok(InputManager {
+            event_pump,
+            key_state: [false; KEYS_NUM],
+            released_key: None,
+            waiting_for_key: false,
+            quit: false,
+            scancode_to_hex_map,
+        })
     }
 
-    /// Returns the next key release in hex key format.
-    ///
-    /// # Returns
-    /// * `Option<u8>` - The hex key code of the next key release, or None if no key was released.
-    pub fn get_next_key_release(&mut self) -> Option<u8> {
+    /// Checks if a specific hex key is currently pressed.
+    pub fn is_key_pressed(&mut self, hex_key: u8) -> bool {
+        self.key_state[hex_key as usize]
+    }
+
+    /// Gets the next key that was released.
+    pub fn get_next_released_key(&mut self) -> Option<u8> {
+        self.waiting_for_key = true;
+        self.released_key.take()
+    }
+
+    /// Updates the state of the InputManager by processing SDL events.
+    pub fn update(&mut self) {
         self.event_pump.pump_events();
 
         for event in self.event_pump.poll_iter() {
             match event {
+                Event::Quit { .. } => self.quit = true,
                 Event::KeyUp {
                     scancode: Some(scancode),
                     ..
                 } => {
                     if let Some(&hex_key) = self.scancode_to_hex_map.get(&scancode) {
-                        if self.key_state[hex_key as usize] {
-                            self.key_state[hex_key as usize] = false;
-                            return Some(hex_key);
+                        self.key_state[hex_key as usize] = false;
+                        if self.waiting_for_key {
+                            self.released_key = Some(hex_key);
+                            self.waiting_for_key = false
                         }
                     }
                 }
@@ -114,18 +101,17 @@ impl InputManager {
                     if let Some(&hex_key) = self.scancode_to_hex_map.get(&scancode) {
                         self.key_state[hex_key as usize] = true;
                     }
+                    if scancode == Scancode::Escape {
+                        self.quit = true;
+                    }
                 }
                 _ => {}
             }
         }
-
-        None
     }
 
-    /// Resets the key state by clearing all pressed keys.
-    pub fn reset_key_state(&mut self) {
-        self.event_pump.pump_events();
-        for _ in self.event_pump.poll_iter() {}
-        self.key_state = [false; KEYS_NUM];
+    /// Checks if a quit event has been received.
+    pub fn should_quit(&self) -> bool {
+        self.quit
     }
 }

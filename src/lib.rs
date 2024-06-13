@@ -2,14 +2,11 @@ mod audio;
 mod input;
 mod video;
 
-use rand::Rng;
 use std::fs::File;
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
-// TODO Create enum with PC moves
-// TODO Handle three quirks:
-// "Cosmac VIP" CHIP-8, HP48's SUPER-CHIP, XO-CHIP.
+use rand::Rng;
 
 use audio::AudioManager;
 use input::InputManager;
@@ -40,8 +37,20 @@ const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
+// TODO Create enum with PC moves
+// TODO Handle three quirks:
+// "Cosmac VIP" CHIP-8, HP48's SUPER-CHIP, XO-CHIP.
+
+enum Version {
+    CosmacVIP,
+    SuperChip,
+    XOChip,
+}
+
 #[allow(non_snake_case)]
 pub struct Chip8 {
+    version: Version,
+
     memory: [u8; MEMORY_SIZE],
     V: [u8; V_COUNT],
     I: u16,
@@ -57,8 +66,7 @@ pub struct Chip8 {
     input: InputManager,
     audio: AudioManager,
 
-    wait_key: bool,
-    wait_key_register: usize,
+    release_key_register: Option<usize>,
 }
 
 impl Chip8 {
@@ -67,6 +75,7 @@ impl Chip8 {
         let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
 
         Chip8 {
+            version: Version::CosmacVIP, // TODO MAke selectable
             memory,
             V: [0; V_COUNT],
             I: 0,
@@ -76,15 +85,14 @@ impl Chip8 {
             delay_timer: 0,
             sound_timer: 0,
             display: DisplayManager::new(),
-            input: InputManager::new(),
+            input: InputManager::new(&sdl_context).unwrap(),
             audio: AudioManager::new(&sdl_context).unwrap(),
-            wait_key: false,
-            wait_key_register: 0,
+            release_key_register: None,
         }
     }
 
     fn emulate_cycle(&mut self) {
-        if self.wait_key {
+        if self.release_key_register.is_some() {
             self.wait_for_next_key();
             return;
         }
@@ -106,10 +114,10 @@ impl Chip8 {
     }
 
     fn wait_for_next_key(&mut self) {
-        if self.wait_key {
-            if let Some(val) = self.input.get_next_key_release() {
-                self.V[self.wait_key_register] = val;
-                self.wait_key = false;
+        if let Some(val) = self.input.get_next_released_key() {
+            if let Some(register) = self.release_key_register {
+                self.V[register] = val;
+                self.release_key_register = None;
             }
         }
     }
@@ -251,16 +259,28 @@ impl Chip8 {
     // 8xy1 - OR Vx, Vy: Set Vx = Vx OR Vy.
     fn op_8xy1(&mut self, x: usize, y: usize) {
         self.V[x] |= self.V[y];
+
+        if let Version::CosmacVIP = self.version {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy2 - AND Vx, Vy: Set Vx = Vx AND Vy.
     fn op_8xy2(&mut self, x: usize, y: usize) {
         self.V[x] &= self.V[y];
+
+        if let Version::CosmacVIP = self.version {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy3 - XOR Vx, Vy: Set Vx = Vx XOR Vy.
     fn op_8xy3(&mut self, x: usize, y: usize) {
         self.V[x] ^= self.V[y];
+
+        if let Version::CosmacVIP = self.version {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy4 - ADD Vx, Vy: Set Vx = Vx + Vy, set VF = carry.
@@ -278,9 +298,11 @@ impl Chip8 {
     }
 
     // 8xy6 - SHR Vx {, Vy}: Set Vx = Vx SHR 1.
-    fn op_8xy6(&mut self, x: usize, _y: usize) {
-        self.V[0xF] = self.V[x] & 0x1;
+    fn op_8xy6(&mut self, x: usize, y: usize) {
+        self.V[x] = self.V[y];
+        let bit = self.V[x] & 0x1;
         self.V[x] >>= 1;
+        self.V[0xF] = bit;
     }
 
     // 8xy7 - SUBN Vx, Vy: Set Vx = Vy - Vx, set VF = NOT borrow.
@@ -291,9 +313,11 @@ impl Chip8 {
     }
 
     // 8xye - SHL Vx {, Vy}: Set Vx = Vx SHL 1.
-    fn op_8xye(&mut self, x: usize, _y: usize) {
-        self.V[0xF] = (self.V[x] >> 7) & 0x1;
+    fn op_8xye(&mut self, x: usize, y: usize) {
+        self.V[x] = self.V[y];
+        let bit = (self.V[x] >> 7) & 0x1;
         self.V[x] <<= 1;
+        self.V[0xF] = bit;
     }
 
     // 9xy0 - SNE Vx, Vy: Skip next instruction if Vx != Vy.
@@ -356,9 +380,7 @@ impl Chip8 {
 
     // Fx0A - LD Vx, K: Wait for a key press, store the value of the key in Vx.
     fn op_fx0a(&mut self, x: usize) {
-        self.wait_key = true;
-        self.wait_key_register = x;
-        self.input.reset_key_state();
+        self.release_key_register = Some(x);
     }
 
     // Fx15 - LD DT, Vx: Set delay timer = Vx.
@@ -393,12 +415,20 @@ impl Chip8 {
         for offset in 0..=x {
             self.memory[self.I as usize + offset] = self.V[offset];
         }
+
+        if let Version::CosmacVIP = self.version {
+            self.I += self.V[x] as u16 + 1;
+        }
     }
 
     // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I.
     fn op_fx65(&mut self, x: usize) {
         for offset in 0..=x {
             self.V[offset] = self.memory[self.I as usize + offset];
+        }
+
+        if let Version::CosmacVIP = self.version {
+            self.I += self.V[x] as u16 + 1;
         }
     }
 }
@@ -418,6 +448,7 @@ pub fn run(mut chip8: Chip8) {
             last_cycle = Instant::now();
 
             chip8.emulate_cycle();
+            chip8.input.update();
         }
 
         if last_frame.elapsed() >= frame_duration {
@@ -427,9 +458,9 @@ pub fn run(mut chip8: Chip8) {
             chip8.update_timers();
         }
 
-        // TODO Handle key inputs
-        // TODO Rework inpu mechanism
-        // TODO Handle quit with escape
+        if chip8.input.should_quit() {
+            break;
+        }
     }
 }
 
