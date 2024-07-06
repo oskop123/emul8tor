@@ -1,4 +1,3 @@
-use emul8tor;
 use std::{env, io};
 
 fn main() -> io::Result<()> {

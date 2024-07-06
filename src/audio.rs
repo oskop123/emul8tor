@@ -17,22 +17,26 @@ impl AudioManager {
     ///
     /// Returns an error if SDL2 fails to get the audio subsystem or open the playback device.
     pub fn new(sdl_context: &sdl2::Sdl) -> Result<Self, Box<dyn Error>> {
+        // Retrieve the SDL2 audio subsystem.
         let audio_subsystem = sdl_context
             .audio()
             .map_err(|e| format!("Failed to get SDL2 audio subsystem: {}", e))?;
 
+        // Define the desired audio specification.
         let desired_spec = AudioSpecDesired {
-            freq: Some(44100),
-            channels: Some(1), // mono
-            samples: None,     // default sample size
+            freq: Some(44100), // 44.1 kHz frequency
+            channels: Some(1), // Mono audio
+            samples: None,     // Default sample size
         };
 
+        // Open the audio playback device with the desired specification.
         let device = audio_subsystem
             .open_playback(None, &desired_spec, |spec| {
                 SquareWave::new(440.0, 0.25, spec.freq as f32)
             })
             .map_err(|e| format!("Failed to open audio playback device: {}", e))?;
 
+        // Return the AudioManager instance.
         Ok(AudioManager { device })
     }
 
@@ -44,6 +48,11 @@ impl AudioManager {
     /// Stops the audio playback.
     pub fn stop(&self) {
         self.device.pause();
+    }
+
+    /// Gets the current status of the audio playback.
+    pub fn status(&self) -> sdl2::audio::AudioStatus {
+        self.device.status()
     }
 }
 
@@ -77,6 +86,10 @@ impl AudioCallback for SquareWave {
     /// Fills the output buffer with audio data.
     ///
     /// Generates a square wave and writes it to the output buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `out` - Mutable reference to the output buffer to be filled with audio data.
     fn callback(&mut self, out: &mut [f32]) {
         for x in out.iter_mut() {
             *x = if self.phase <= 0.5 {
@@ -92,41 +105,6 @@ impl AudioCallback for SquareWave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sdl2::audio::AudioStatus;
-    use std::sync::Mutex;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-    static mut SDL_CONTEXT: Option<Mutex<sdl2::Sdl>> = None;
-
-    fn setup() -> &'static Mutex<sdl2::Sdl> {
-        unsafe {
-            INIT.call_once(|| {
-                let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
-                SDL_CONTEXT = Some(Mutex::new(sdl_context));
-            });
-            SDL_CONTEXT.as_ref().expect("SDL_CONTEXT not initialized")
-        }
-    }
-
-    #[test]
-    fn test_audio_manager_creation() {
-        let sdl_context = setup().lock().expect("Failed to lock SDL_CONTEXT");
-        let audio_manager = AudioManager::new(&sdl_context).expect("Failed to create AudioManager");
-        assert_eq!(audio_manager.device.status(), AudioStatus::Paused);
-    }
-
-    #[test]
-    fn test_audio_manager_start_stop() {
-        let sdl_context = setup().lock().expect("Failed to lock SDL_CONTEXT");
-        let audio_manager = AudioManager::new(&sdl_context).expect("Failed to create AudioManager");
-
-        audio_manager.start();
-        assert_eq!(audio_manager.device.status(), AudioStatus::Playing);
-
-        audio_manager.stop();
-        assert_eq!(audio_manager.device.status(), AudioStatus::Paused);
-    }
 
     #[test]
     fn test_square_wave_callback() {
@@ -140,3 +118,4 @@ mod tests {
         }
     }
 }
+

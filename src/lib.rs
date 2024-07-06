@@ -1,6 +1,6 @@
-mod audio;
-mod input;
-mod video;
+pub mod audio;
+pub mod input;
+pub mod video;
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -17,6 +17,9 @@ const V_COUNT: usize = 16;
 const ROM_START_ADDRESS: usize = 0x200;
 const SPRITE_WIDTH: usize = 8;
 const MAX_STACK_LEVELS: usize = 16;
+
+const FRAME_RATE: u32 = 60;
+const CYCLES_PER_SECOND: u32 = 700;
 
 const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -37,20 +40,11 @@ const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
-// TODO Create enum with PC moves
 // TODO Handle three quirks:
-// "Cosmac VIP" CHIP-8, HP48's SUPER-CHIP, XO-CHIP.
-
-enum Version {
-    CosmacVIP,
-    SuperChip,
-    XOChip,
-}
+// CosmacVIP, SuperChip, XOChip
 
 #[allow(non_snake_case)]
 pub struct Chip8 {
-    version: Version,
-
     memory: [u8; MEMORY_SIZE],
     V: [u8; V_COUNT],
     I: u16,
@@ -74,8 +68,7 @@ impl Chip8 {
     pub fn new(memory: [u8; MEMORY_SIZE]) -> Self {
         let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
 
-        Chip8 {
-            version: Version::CosmacVIP, // TODO MAke selectable
+        let mut chip8 = Chip8 {
             memory,
             V: [0; V_COUNT],
             I: 0,
@@ -84,20 +77,24 @@ impl Chip8 {
             SP: 0,
             delay_timer: 0,
             sound_timer: 0,
-            display: DisplayManager::new(),
+            display: DisplayManager::new(&sdl_context).unwrap(),
             input: InputManager::new(&sdl_context).unwrap(),
             audio: AudioManager::new(&sdl_context).unwrap(),
             release_key_register: None,
-        }
+        };
+
+        // Load fontset into memory
+        chip8.memory[..CHIP8_FONTSET.len()].copy_from_slice(&CHIP8_FONTSET);
+        chip8
     }
 
     fn emulate_cycle(&mut self) {
-        if self.release_key_register.is_some() {
-            self.wait_for_next_key();
-            return;
+        if let Some(register) = self.release_key_register {
+            self.wait_for_next_key(register);
+        } else {
+            let opcode = self.fetch_opcode();
+            self.execute_opcode(opcode);
         }
-        let opcode = self.fetch_opcode();
-        self.execute_opcode(opcode);
     }
 
     fn update_timers(&mut self) {
@@ -113,12 +110,10 @@ impl Chip8 {
         }
     }
 
-    fn wait_for_next_key(&mut self) {
+    fn wait_for_next_key(&mut self, register: usize) {
         if let Some(val) = self.input.get_next_released_key() {
-            if let Some(register) = self.release_key_register {
-                self.V[register] = val;
-                self.release_key_register = None;
-            }
+            self.V[register] = val;
+            self.release_key_register = None;
         }
     }
 
@@ -259,28 +254,19 @@ impl Chip8 {
     // 8xy1 - OR Vx, Vy: Set Vx = Vx OR Vy.
     fn op_8xy1(&mut self, x: usize, y: usize) {
         self.V[x] |= self.V[y];
-
-        if let Version::CosmacVIP = self.version {
-            self.V[0xF] = 0;
-        }
+        self.V[0xF] = 0;
     }
 
     // 8xy2 - AND Vx, Vy: Set Vx = Vx AND Vy.
     fn op_8xy2(&mut self, x: usize, y: usize) {
         self.V[x] &= self.V[y];
-
-        if let Version::CosmacVIP = self.version {
-            self.V[0xF] = 0;
-        }
+        self.V[0xF] = 0;
     }
 
     // 8xy3 - XOR Vx, Vy: Set Vx = Vx XOR Vy.
     fn op_8xy3(&mut self, x: usize, y: usize) {
         self.V[x] ^= self.V[y];
-
-        if let Version::CosmacVIP = self.version {
-            self.V[0xF] = 0;
-        }
+        self.V[0xF] = 0;
     }
 
     // 8xy4 - ADD Vx, Vy: Set Vx = Vx + Vy, set VF = carry.
@@ -344,15 +330,21 @@ impl Chip8 {
 
     // Dxyn - DRW Vx, Vy, nibble: Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
     fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
-        let x_coord = self.V[x] as usize;
-        let y_coord = self.V[y] as usize;
+        let x_coord = self.V[x] as usize % self.display.get_width();
+        let y_coord = self.V[y] as usize % self.display.get_height();
 
         self.V[0xF] = 0;
         for byte_index in 0..n as usize {
-            let y = (y_coord + byte_index) % self.display.get_height();
+            let y = y_coord + byte_index;
+            if y >= self.display.get_height() {
+                break;
+            }
             let byte = self.memory[self.I as usize + byte_index];
             for bit_index in 0..SPRITE_WIDTH {
-                let x = (x_coord + bit_index) % self.display.get_width();
+                let x = x_coord + bit_index;
+                if x >= self.display.get_width() {
+                    break;
+                }
                 let bit = (byte >> (7 - bit_index)) & 1;
                 self.V[0xF] |= self.display.set_pixel(x, y, bit);
             }
@@ -416,9 +408,7 @@ impl Chip8 {
             self.memory[self.I as usize + offset] = self.V[offset];
         }
 
-        if let Version::CosmacVIP = self.version {
-            self.I += self.V[x] as u16 + 1;
-        }
+        self.I += self.V[x] as u16 + 1;
     }
 
     // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I.
@@ -427,14 +417,9 @@ impl Chip8 {
             self.V[offset] = self.memory[self.I as usize + offset];
         }
 
-        if let Version::CosmacVIP = self.version {
-            self.I += self.V[x] as u16 + 1;
-        }
+        self.I += self.V[x] as u16 + 1;
     }
 }
-
-const FRAME_RATE: u32 = 60;
-const CYCLES_PER_SECOND: u32 = 700;
 
 pub fn run(mut chip8: Chip8) {
     let mut last_frame = Instant::now();
@@ -446,14 +431,12 @@ pub fn run(mut chip8: Chip8) {
     loop {
         if last_cycle.elapsed() >= cycle_duration {
             last_cycle = Instant::now();
-
             chip8.emulate_cycle();
             chip8.input.update();
         }
 
         if last_frame.elapsed() >= frame_duration {
             last_frame = Instant::now();
-
             chip8.display.render();
             chip8.update_timers();
         }
@@ -467,7 +450,6 @@ pub fn run(mut chip8: Chip8) {
 pub fn load_program_rom(file_path: &str) -> io::Result<[u8; MEMORY_SIZE]> {
     let mut file = File::open(file_path)?;
     let mut buffer = [0u8; MEMORY_SIZE];
-    buffer[..CHIP8_FONTSET.len()].copy_from_slice(&CHIP8_FONTSET);
     file.read(&mut buffer[ROM_START_ADDRESS..])?;
     Ok(buffer)
 }
