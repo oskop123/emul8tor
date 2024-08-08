@@ -10,7 +10,6 @@
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Features
 
@@ -81,9 +80,9 @@ The emulator can be configured via a config.toml file. You can customize various
 ```bash
 [display]
 scale = 10
-fullscreen = false
 
 [emulation]
+mode = xochip
 speed = 500
 ```
 
