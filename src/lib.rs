@@ -10,7 +10,7 @@ use rand::Rng;
 
 use audio::AudioManager;
 use input::InputManager;
-use video::DisplayManager;
+use video::{DisplayManager, Resolution};
 
 const MEMORY_SIZE: usize = 4096;
 const V_COUNT: usize = 16;
@@ -40,11 +40,17 @@ const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
-// TODO Handle three quirks:
-// CosmacVIP, SuperChip, XOChip
+#[derive(PartialEq)]
+pub enum Mode {
+    Chip8,
+    SuperChip,
+    XOChip,
+}
 
 #[allow(non_snake_case)]
 pub struct Chip8 {
+    mode: Mode,
+
     memory: [u8; MEMORY_SIZE],
     V: [u8; V_COUNT],
     I: u16,
@@ -59,16 +65,18 @@ pub struct Chip8 {
     display: DisplayManager,
     input: InputManager,
     audio: AudioManager,
+    sdl_context: sdl2::Sdl,
 
     release_key_register: Option<usize>,
 }
 
 impl Chip8 {
     #[allow(non_snake_case)]
-    pub fn new(memory: [u8; MEMORY_SIZE]) -> Self {
+    pub fn new(mode: Mode, memory: [u8; MEMORY_SIZE]) -> Self {
         let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
 
         let mut chip8 = Chip8 {
+            mode,
             memory,
             V: [0; V_COUNT],
             I: 0,
@@ -77,9 +85,10 @@ impl Chip8 {
             SP: 0,
             delay_timer: 0,
             sound_timer: 0,
-            display: DisplayManager::new(&sdl_context).unwrap(),
+            display: DisplayManager::new(&sdl_context, Resolution::Low).unwrap(),
             input: InputManager::new(&sdl_context).unwrap(),
             audio: AudioManager::new(&sdl_context).unwrap(),
+            sdl_context,
             release_key_register: None,
         };
 
@@ -132,10 +141,28 @@ impl Chip8 {
         let n = (opcode & 0x000F) as u8;
 
         match opcode & 0xF000 {
-            0x0000 => match opcode {
-                0x00E0 => self.op_00e0(),
-                0x00EE => self.op_00ee(),
-                _ => Self::unknown_opcode(opcode),
+            0x0000 => match opcode & 0x0F00 {
+                0x0000 => match opcode & 0x00F0 {
+                    0x00C0 if self.mode == Mode::SuperChip || self.mode == Mode::XOChip => {
+                        self.op_00cn(n)
+                    }
+                    0x00D0 if self.mode == Mode::XOChip => self.op_00dn(n),
+                    0x00E0 => match opcode & 0x000F {
+                        0x0000 => self.op_00e0(),
+                        0x000E => self.op_00ee(),
+                        _ => Self::unknown_opcode(opcode),
+                    },
+                    0x00F0 => match opcode & 0x000F {
+                        0x000B => self.op_00fb(),
+                        0x000C => self.op_00fc(),
+                        // 0x000D => self.op_00fd(),
+                        0x000E => self.op_00fe(),
+                        0x000F => self.op_00ff(),
+                        _ => Self::unknown_opcode(opcode),
+                    },
+                    _ => Self::unknown_opcode(opcode),
+                },
+                _ => self.op_0nnn(nnn),
             },
             0x1000 => self.op_1nnn(nnn),
             0x2000 => self.op_2nnn(nnn),
@@ -158,7 +185,8 @@ impl Chip8 {
             },
             0x9000 => self.op_9xy0(x, y),
             0xA000 => self.op_annn(nnn),
-            0xB000 => self.op_bnnn(nnn),
+            0xB000 if self.mode != Mode::SuperChip => self.op_bnnn(nnn),
+            0xB000 if self.mode == Mode::SuperChip => self.op_bxnn(x, nnn),
             0xC000 => self.op_cxkk(x, kk),
             0xD000 => self.op_dxyn(x, y, n),
             0xE000 => match opcode & 0x00FF {
@@ -186,6 +214,20 @@ impl Chip8 {
         panic!("Unknown opcode: {:X}", opcode);
     }
 
+    // 0nnn - SYS addr: Jump to a machine code routine at nnn.
+    fn op_0nnn(&mut self, _nnn: u16) {
+        // This instruction is only used on the old computers on which Chip-8
+        // was originally implemented. It is ignored by modern interpreters.
+    }
+
+    fn op_00cn(&mut self, n: u8) {
+        self.display.scroll_down(n as usize)
+    }
+
+    fn op_00dn(&mut self, n: u8) {
+        self.display.scroll_up(n as usize)
+    }
+
     // 00E0 - CLS: Clear the display.
     fn op_00e0(&mut self) {
         self.display.clear();
@@ -198,6 +240,24 @@ impl Chip8 {
         }
         self.SP -= 1;
         self.PC = self.stack[self.SP];
+    }
+
+    fn op_00fb(&mut self) {
+        self.display.scroll_right()
+    }
+
+    fn op_00fc(&mut self) {
+        self.display.scroll_left()
+    }
+
+    // 00FE - LORES: Switch to lores mode.
+    fn op_00fe(&mut self) {
+        self.display = DisplayManager::new(&self.sdl_context, Resolution::Low).unwrap();
+    }
+
+    // 00FF - HIRES: Switch to hires mode.
+    fn op_00ff(&mut self) {
+        self.display = DisplayManager::new(&self.sdl_context, Resolution::High).unwrap();
     }
 
     // 1nnn - JP addr: Jump to location nnn.
@@ -252,21 +312,30 @@ impl Chip8 {
     }
 
     // 8xy1 - OR Vx, Vy: Set Vx = Vx OR Vy.
+    // SuperChip and XOChip modes don't reset VF.
     fn op_8xy1(&mut self, x: usize, y: usize) {
         self.V[x] |= self.V[y];
-        self.V[0xF] = 0;
+        if self.mode == Mode::Chip8 {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy2 - AND Vx, Vy: Set Vx = Vx AND Vy.
+    // SuperChip and XOChip modes don't reset VF.
     fn op_8xy2(&mut self, x: usize, y: usize) {
         self.V[x] &= self.V[y];
-        self.V[0xF] = 0;
+        if self.mode == Mode::Chip8 {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy3 - XOR Vx, Vy: Set Vx = Vx XOR Vy.
+    // SuperChip and XOChip modes don't reset VF.
     fn op_8xy3(&mut self, x: usize, y: usize) {
         self.V[x] ^= self.V[y];
-        self.V[0xF] = 0;
+        if self.mode == Mode::Chip8 {
+            self.V[0xF] = 0;
+        }
     }
 
     // 8xy4 - ADD Vx, Vy: Set Vx = Vx + Vy, set VF = carry.
@@ -284,8 +353,11 @@ impl Chip8 {
     }
 
     // 8xy6 - SHR Vx {, Vy}: Set Vx = Vx SHR 1.
+    // SuperChip doesn't set vX to vY.
     fn op_8xy6(&mut self, x: usize, y: usize) {
-        self.V[x] = self.V[y];
+        if self.mode != Mode::SuperChip {
+            self.V[x] = self.V[y];
+        }
         let bit = self.V[x] & 0x1;
         self.V[x] >>= 1;
         self.V[0xF] = bit;
@@ -299,8 +371,11 @@ impl Chip8 {
     }
 
     // 8xye - SHL Vx {, Vy}: Set Vx = Vx SHL 1.
+    // SuperChip doesn't set vX to vY.
     fn op_8xye(&mut self, x: usize, y: usize) {
-        self.V[x] = self.V[y];
+        if self.mode != Mode::SuperChip {
+            self.V[x] = self.V[y];
+        }
         let bit = (self.V[x] >> 7) & 0x1;
         self.V[x] <<= 1;
         self.V[0xF] = bit;
@@ -323,26 +398,32 @@ impl Chip8 {
         self.PC = (addr + self.V[0] as u16) as usize;
     }
 
+    // Bxnn - JP VX, addr: Jump to location xnn + VX.
+    fn op_bxnn(&mut self, x: usize, xnn: u16) {
+        self.PC = (xnn + self.V[x] as u16) as usize;
+    }
+
     // Cxkk - RND Vx, byte: Set Vx = random byte AND kk.
     fn op_cxkk(&mut self, x: usize, kk: u8) {
         self.V[x] = rand::thread_rng().gen::<u8>() & kk;
     }
 
     // Dxyn - DRW Vx, Vy, nibble: Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
+    // XO-CHIP wraps pixels instead of clipping them.
     fn op_dxyn(&mut self, x: usize, y: usize, n: u8) {
-        let x_coord = self.V[x] as usize % self.display.get_width();
-        let y_coord = self.V[y] as usize % self.display.get_height();
+        let x_coord = self.V[x] as usize % self.display.width();
+        let y_coord = self.V[y] as usize % self.display.height();
 
         self.V[0xF] = 0;
         for byte_index in 0..n as usize {
-            let y = y_coord + byte_index;
-            if y >= self.display.get_height() {
+            let y = (y_coord + byte_index) % self.display.height();
+            if self.mode != Mode::XOChip && y_coord + byte_index >= self.display.height() {
                 break;
             }
             let byte = self.memory[self.I as usize + byte_index];
             for bit_index in 0..SPRITE_WIDTH {
-                let x = x_coord + bit_index;
-                if x >= self.display.get_width() {
+                let x = (x_coord + bit_index) % self.display.width();
+                if self.mode != Mode::XOChip && x_coord + bit_index >= self.display.width() {
                     break;
                 }
                 let bit = (byte >> (7 - bit_index)) & 1;
@@ -403,21 +484,29 @@ impl Chip8 {
     }
 
     // Fx55 - LD [I], Vx: Store registers V0 through Vx in memory starting at location I.
+    // SuperChip doesn't increment I.
     fn op_fx55(&mut self, x: usize) {
         for offset in 0..=x {
             self.memory[self.I as usize + offset] = self.V[offset];
         }
 
-        self.I += self.V[x] as u16 + 1;
+        if self.mode != Mode::SuperChip {
+            self.I += self.V[x] as u16;
+            self.I += 1;
+        }
     }
 
     // Fx65 - LD Vx, [I]: Read registers V0 through Vx from memory starting at location I.
+    // SuperChip doesn't increment I.
     fn op_fx65(&mut self, x: usize) {
         for offset in 0..=x {
             self.V[offset] = self.memory[self.I as usize + offset];
         }
 
-        self.I += self.V[x] as u16 + 1;
+        if self.mode != Mode::SuperChip {
+            self.I += self.V[x] as u16;
+            self.I += 1;
+        }
     }
 }
 
