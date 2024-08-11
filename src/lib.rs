@@ -19,7 +19,6 @@ const SPRITE_WIDTH: usize = 8;
 const MAX_STACK_LEVELS: usize = 16;
 
 const FRAME_RATE: u32 = 60;
-const CYCLES_PER_SECOND: u32 = 700;
 
 const CHIP8_FONTSET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -50,6 +49,7 @@ pub enum Mode {
 #[allow(non_snake_case)]
 pub struct Chip8 {
     mode: Mode,
+    scale: usize,
 
     memory: [u8; MEMORY_SIZE],
     V: [u8; V_COUNT],
@@ -72,11 +72,12 @@ pub struct Chip8 {
 
 impl Chip8 {
     #[allow(non_snake_case)]
-    pub fn new(mode: Mode, memory: [u8; MEMORY_SIZE]) -> Self {
+    pub fn new(mode: Mode, scale: usize, memory: [u8; MEMORY_SIZE]) -> Self {
         let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
 
         let mut chip8 = Chip8 {
             mode,
+            scale,
             memory,
             V: [0; V_COUNT],
             I: 0,
@@ -85,7 +86,7 @@ impl Chip8 {
             SP: 0,
             delay_timer: 0,
             sound_timer: 0,
-            display: DisplayManager::new(&sdl_context, Resolution::Low).unwrap(),
+            display: DisplayManager::new(&sdl_context, Resolution::Low, scale).unwrap(),
             input: InputManager::new(&sdl_context).unwrap(),
             audio: AudioManager::new(&sdl_context).unwrap(),
             sdl_context,
@@ -252,12 +253,13 @@ impl Chip8 {
 
     // 00FE - LORES: Switch to lores mode.
     fn op_00fe(&mut self) {
-        self.display = DisplayManager::new(&self.sdl_context, Resolution::Low).unwrap();
+        self.display = DisplayManager::new(&self.sdl_context, Resolution::Low, self.scale).unwrap();
     }
 
     // 00FF - HIRES: Switch to hires mode.
     fn op_00ff(&mut self) {
-        self.display = DisplayManager::new(&self.sdl_context, Resolution::High).unwrap();
+        self.display =
+            DisplayManager::new(&self.sdl_context, Resolution::High, self.scale).unwrap();
     }
 
     // 1nnn - JP addr: Jump to location nnn.
@@ -510,12 +512,12 @@ impl Chip8 {
     }
 }
 
-pub fn run(mut chip8: Chip8) {
+pub fn run(mut chip8: Chip8, speed: u32) {
     let mut last_frame = Instant::now();
     let frame_duration: Duration = Duration::from_secs_f64(1.0 / FRAME_RATE as f64);
 
     let mut last_cycle = Instant::now();
-    let cycle_duration: Duration = Duration::from_secs_f64(1.0 / CYCLES_PER_SECOND as f64);
+    let cycle_duration: Duration = Duration::from_secs_f64(1.0 / speed as f64);
 
     loop {
         if last_cycle.elapsed() >= cycle_duration {
@@ -536,9 +538,9 @@ pub fn run(mut chip8: Chip8) {
     }
 }
 
-pub fn load_program_rom(file_path: &str) -> io::Result<[u8; MEMORY_SIZE]> {
-    let mut file = File::open(file_path)?;
+pub fn load_program_rom(rom_path: &str) -> io::Result<[u8; MEMORY_SIZE]> {
+    let mut rom = File::open(rom_path)?;
     let mut buffer = [0u8; MEMORY_SIZE];
-    file.read(&mut buffer[ROM_START_ADDRESS..])?;
+    rom.read(&mut buffer[ROM_START_ADDRESS..])?;
     Ok(buffer)
 }

@@ -8,7 +8,6 @@
 - [Supported Modes](#supported-modes)
 - [Installation](#installation)
 - [Usage](#usage)
-- [Configuration](#configuration)
 - [Contributing](#contributing)
 
 ## Features
@@ -63,27 +62,23 @@ To start the emulator with a CHIP-8 ROM, use the following command:
 
 ### Command-Line Options
 ```bash
---mode: Specify the emulation mode (chip8, superchip, xochip).
---scale: Set the display scaling factor.
---speed: Adjust the execution speed (in Hz).
+Usage: emul8tor [OPTIONS] <ROM_PATH>
+
+Arguments:
+  <ROM_PATH>  Path to the ROM file
+
+Options:
+  -m, --mode <MODE>    Specify the emulation mode (Chip8, SuperChip, XOChip) [default: Chip8]
+      --scale <SCALE>  Set the display scaling factor [default: 10]
+      --speed <SPEED>  Adjust the execution speed (in Hz) [default: 700]
+  -h, --help           Print help
+  -V, --version        Print version
 ```
 
 Example:
 
 ```bash
-./em8lator --mode xochip --scale 10 --speed 500 /path/to/your/rom.ch8
-```
-
-## Configuration
-The emulator can be configured via a config.toml file. You can customize various parameters such as key bindings, display settings, and more. Below is an example configuration:
-
-```bash
-[display]
-scale = 10
-
-[emulation]
-mode = xochip
-speed = 500
+./em8lator --mode XOChip --scale 10 --speed 500 /path/to/your/rom.ch8
 ```
 
 ## Contributing

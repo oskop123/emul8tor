@@ -5,16 +5,11 @@ use sdl2::video::Window;
 
 use std::error::Error;
 
-// TODO Move to CLI option
-const WINDOW_SCALE: usize = 20;
-
 const X_DIM_LORES: usize = 64;
 const Y_DIM_LORES: usize = 32;
-const SCALE_LORES: usize = WINDOW_SCALE;
 
 const X_DIM_HIRES: usize = 128;
 const Y_DIM_HIRES: usize = 64;
-const SCALE_HIRES: usize = WINDOW_SCALE / 2;
 
 const WINDOW_TITLE: &str = "emul8tor";
 
@@ -39,22 +34,31 @@ impl DisplayManager {
     ///
     /// * `sdl_context` - A reference to an initialized SDL context.
     /// * `resolution` - A selected resolution mode.
+    /// * `scale` - A display scaling factor.
     ///
     /// # Errors
     ///
     /// Returns an error if SDL2 fails to get the video subsystem or create the window or canvas.
-    pub fn new(sdl_context: &sdl2::Sdl, resolution: Resolution) -> Result<Self, Box<dyn Error>> {
+    pub fn new(
+        sdl_context: &sdl2::Sdl,
+        resolution: Resolution,
+        scale: usize,
+    ) -> Result<Self, Box<dyn Error>> {
         let video_subsystem = sdl_context
             .video()
             .map_err(|e| format!("Failed to get SDL2 video subsystem: {}", e))?;
 
-        let (x_dim, y_dim, scale) = match resolution {
-            Resolution::Low => (X_DIM_LORES, Y_DIM_LORES, SCALE_LORES),
-            Resolution::High => (X_DIM_HIRES, Y_DIM_HIRES, SCALE_HIRES),
+        let (x_dim, y_dim, window_scale) = match resolution {
+            Resolution::Low => (X_DIM_LORES, Y_DIM_LORES, scale),
+            Resolution::High => (X_DIM_HIRES, Y_DIM_HIRES, scale / 2),
         };
 
         let window = video_subsystem
-            .window(WINDOW_TITLE, (x_dim * scale) as u32, (y_dim * scale) as u32)
+            .window(
+                WINDOW_TITLE,
+                (x_dim * scale) as u32,
+                (y_dim * window_scale) as u32,
+            )
             .position_centered()
             .build()
             .map_err(|e| format!("Failed to create window: {}", e))?;
